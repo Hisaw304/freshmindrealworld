@@ -1,26 +1,66 @@
 // src/components/Campus/VideoOverlay.jsx
 import React, { useEffect, useRef, useState } from "react";
 
-/*
-  Behavior:
-   - Renders a thumbnail + play overlay (always visible).
-   - On mobile (<=1024px) clicking the play overlay will replace the thumbnail with the iframe inline (preserves original mobile behaviour).
-   - On desktop clicking the play overlay opens a modal and lazy-loads the iframe.
-   - The media container uses padding-top (56.25%) so it NEVER collapses.
-   - Preserves any external classes you already use.
-*/
+/**
+ * Robust VideoOverlay
+ * - Removes the yellow pill (explicit element removed).
+ * - Adds a dark overlay above the thumbnail so any baked-in yellow is hidden.
+ * - Injects a tiny one-time CSS override (scoped via `.no-yellow`) to neutralize
+ *   pseudo-elements / stray inline gradient DIVs that may come from elsewhere.
+ * - Maintains mobile inline vs desktop modal behavior.
+ * - Supports props: `iframeSrc` (preferred) or `src` (backwards compatible).
+ * - If `ensureControls` is true (default) and the iframe URL lacks controls=,
+ *   it appends controls=true so native controls are available after load.
+ */
 export default function VideoOverlay({
   thumbnail,
   iframeSrc,
+  src, // backward-compat
   alt = "video",
-  playInlineOnMobile = true, // preserves your original mobile inline iframe if true
+  playInlineOnMobile = true,
+  ensureControls = true,
 }) {
+  const overlayRef = useRef(null);
   const [isMobile, setIsMobile] = useState(false);
   const [openModal, setOpenModal] = useState(false);
   const [inlineLoaded, setInlineLoaded] = useState(false);
-  const overlayRef = useRef(null);
 
-  // detect mobile breakpoint consistent with your earlier code
+  // pick url from either prop
+  const rawIframeUrl = iframeSrc || src || "";
+
+  // ensure controls=true if not present (helps pause/play)
+  function withControls(url) {
+    if (!url) return url;
+    if (url.includes("controls=")) return url;
+    // relative urls also work with string approach
+    return url.includes("?") ? `${url}&controls=true` : `${url}?controls=true`;
+  }
+  const iframeUrl = ensureControls ? withControls(rawIframeUrl) : rawIframeUrl;
+
+  // inject small CSS override *once* (scoped to .no-yellow)
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    if (document.getElementById("video-overlay-no-yellow-style")) return;
+
+    const css = `
+      /* scoped: neutralize stray yellow pill/pseudo-elements under .no-yellow */
+      .no-yellow::before,
+      .no-yellow::after,
+      .no-yellow .play-pill,
+      .no-yellow .yellow-pill,
+      .no-yellow > div[style*="FFCF23"],
+      .no-yellow > div[style*="F59E0B"] {
+        display: none !important;
+        background: transparent !important;
+      }
+    `;
+    const style = document.createElement("style");
+    style.id = "video-overlay-no-yellow-style";
+    style.appendChild(document.createTextNode(css));
+    document.head.appendChild(style);
+  }, []);
+
+  // detect mobile breakpoint (matches your earlier logic)
   useEffect(() => {
     if (typeof window === "undefined") return;
     const mq = window.matchMedia("(max-width:1024px)");
@@ -34,7 +74,7 @@ export default function VideoOverlay({
     };
   }, []);
 
-  // keep escape to close modal
+  // ESC to close modal
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === "Escape") setOpenModal(false);
@@ -43,50 +83,61 @@ export default function VideoOverlay({
     return () => window.removeEventListener("keydown", onKey);
   }, [openModal]);
 
-  // click outside modal to close
   const onBackdropClick = (e) => {
     if (overlayRef.current && e.target === overlayRef.current)
       setOpenModal(false);
   };
 
-  const onPlay = () => {
+  const handlePlay = () => {
     if (isMobile && playInlineOnMobile) {
-      // swap thumbnail -> iframe inline
       setInlineLoaded(true);
-      // scroll into view slightly (optional)
-      window.setTimeout(() => {
-        const el = document.activeElement;
-        if (el) el.blur();
-      }, 50);
+      // accessible: blur any active element
+      setTimeout(() => {
+        if (document.activeElement && document.activeElement.blur) {
+          document.activeElement.blur();
+        }
+      }, 30);
       return;
     }
-    // desktop: open modal and lazy-load iframe inside it
     setOpenModal(true);
   };
 
+  // only load iframe when needed
   const shouldShowThumbnail = !inlineLoaded;
-  const iframeSrcToUse = inlineLoaded || openModal ? iframeSrc : undefined;
+  const iframeSrcToUse = inlineLoaded || openModal ? iframeUrl : undefined;
 
   return (
     <>
-      {/* media container: uses padding-top to create aspect ratio so it never collapses */}
+      {/* note: .card-media is kept to match your CSS; .no-yellow prevents stray gradients */}
       <div
-        className="card-media"
+        className="card-media no-yellow"
         style={{ position: "relative", paddingTop: "56.25%" }}
       >
-        {/* thumbnail (absolute) */}
+        {/* thumbnail image */}
         {shouldShowThumbnail && (
-          <img
-            alt={alt}
-            src={thumbnail}
-            loading="lazy"
-            className="absolute inset-0 w-full h-full object-cover"
-            style={{ zIndex: 1 }}
-          />
+          <>
+            <img
+              alt={alt}
+              src={thumbnail}
+              loading="lazy"
+              className="absolute inset-0 w-full h-full object-cover"
+              style={{ zIndex: 1 }}
+            />
+            {/* dark overlay like original raw markup so play icon pops and any yellow in the image is dimmed */}
+            <div
+              aria-hidden="true"
+              className="absolute inset-0"
+              style={{
+                background: "rgba(0,0,0,0.6)",
+                zIndex: 2,
+                pointerEvents: "none",
+              }}
+            />
+          </>
         )}
 
-        {/* inline iframe (if mobile inline or user clicked inline) */}
-        {inlineLoaded && (
+        {/* inline iframe (mobile inline or after click if you chose inline) */}
+        {inlineLoaded && iframeSrcToUse && (
           <iframe
             src={iframeSrcToUse}
             title={alt}
@@ -95,45 +146,22 @@ export default function VideoOverlay({
             allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture"
             allowFullScreen
             className="absolute inset-0 w-full h-full"
-            style={{ zIndex: 2 }}
+            style={{ zIndex: 3 }}
           />
         )}
-
-        {/* Play pill (visual) - sits behind the white circle, centered */}
-        {!inlineLoaded && (
-          <div
-            aria-hidden="true"
-            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
-            style={{
-              width: 220,
-              height: 84,
-              borderRadius: 8,
-              background: "linear-gradient(90deg,#FFCF23 0%, #F59E0B 100%)",
-              boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
-              zIndex: 10,
-              pointerEvents: "none", // pill should not intercept click; button will handle it
-            }}
-          />
-        )}
-
-        {/* play button (always visible above thumbnail) */}
+        {/* centered white circular play button */}
         {!inlineLoaded && (
           <button
-            onClick={onPlay}
+            onClick={handlePlay}
             aria-label={`Play ${alt}`}
-            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center rounded-full shadow-lg"
             style={{
-              zIndex: 20,
+              zIndex: 4,
               width: 72,
               height: 72,
-              borderRadius: "9999px",
               background: "#fff",
-              border: "none",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              boxShadow: "0 10px 30px rgba(0,0,0,0.45)",
               cursor: "pointer",
+              boxShadow: "0 10px 30px rgba(0,0,0,0.45)",
             }}
           >
             <svg
@@ -141,7 +169,7 @@ export default function VideoOverlay({
               width="34"
               height="34"
               fill="#111"
-              aria-hidden
+              aria-hidden="true"
             >
               <path d="M188.3 147.1c-7.6 4.2-12.3 12.3-12.3 20.9v176c0 8.7 4.7 16.7 12.3 20.9 7.6 4.6 16.8 4 24.3-.5l144-88c7.1-4.4 11.5-12.1 11.5-20.5s-4.4-16.1-11.5-20.5l-144-88c-7.4-4.5-16.7-4.7-24.3-.5z" />
             </svg>
@@ -149,12 +177,13 @@ export default function VideoOverlay({
         )}
       </div>
 
-      {/* desktop modal (only when opened) */}
-      {openModal && (
+      {/* desktop modal (lazy-loaded iframe) */}
+      {openModal && iframeSrcToUse && (
         <div
           ref={overlayRef}
           onClick={onBackdropClick}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          style={{ background: "rgba(0,0,0,0.8)", padding: 16 }}
           role="dialog"
           aria-modal="true"
         >
@@ -162,7 +191,8 @@ export default function VideoOverlay({
             <button
               aria-label="Close video"
               onClick={() => setOpenModal(false)}
-              className="absolute top-3 right-3 z-70 bg-white/10 rounded-full p-2"
+              className="absolute top-3 right-3 bg-white/10 rounded-full p-2"
+              style={{ zIndex: 70 }}
             >
               ✕
             </button>
